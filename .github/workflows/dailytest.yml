@@ -21,38 +21,33 @@ jobs:
       issues: write
 
     steps:
-      - name: 'zap/initiate'
+      - name: zap/initiate
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: 'zap/identity-setter'
+      - name: zap/identity-setter
         run: |
           git config user.name "${{ secrets.GIT_USER_NAME }}"
           git config user.email "${{ secrets.GIT_USER_EMAIL }}"
 
-      - name: 'zap/slot-throttler (variable intensity, no Sunday)'
+      - name: zap/slot-throttler
         id: run_decision
         run: |
           DAY_OF_WEEK=$(date +%u)
 
-          # Skip Sundays (7)
           if [ "$DAY_OF_WEEK" -eq 7 ]; then
-            echo "🚫 Sunday detected. Skipping all activity."
             echo "should_run=0" >> $GITHUB_OUTPUT
             exit 0
           fi
 
-          # 80% chance to run
           SHOULD_RUN=$((RANDOM % 10 < 8))
           echo "should_run=$SHOULD_RUN" >> $GITHUB_OUTPUT
 
           if [ "$SHOULD_RUN" -eq 0 ]; then
-            echo "🔕 Skipping this run."
             exit 0
           fi
 
-          # Intensity distribution
           R=$((RANDOM % 100))
 
           if [ "$R" -lt 40 ]; then
@@ -66,9 +61,8 @@ jobs:
           fi
 
           echo "intensity=$LEVEL" >> $GITHUB_OUTPUT
-          echo "🔥 Intensity level: $LEVEL"
 
-      - name: 'zap/vector-decider'
+      - name: zap/vector-decider
         if: steps.run_decision.outputs.should_run == '1'
         id: zq_type
         run: |
@@ -78,7 +72,6 @@ jobs:
               cmt) echo "action=commit" >> $GITHUB_OUTPUT; exit 0 ;;
               is)  echo "action=issue" >> $GITHUB_OUTPUT; exit 0 ;;
               pr)  echo "action=pull_request" >> $GITHUB_OUTPUT; exit 0 ;;
-              *)   echo "Invalid test_action: '$INPUT'. Falling back." ;;
             esac
           fi
 
@@ -94,10 +87,9 @@ jobs:
           esac
 
           RANDOM_ACTION=${ACTIONS[$((RANDOM % ${#ACTIONS[@]}))]}
-          echo "Selected action: $RANDOM_ACTION"
           echo "action=$RANDOM_ACTION" >> $GITHUB_OUTPUT
 
-      - name: 'zap/datastream-mutator'
+      - name: zap/datastream-mutator
         if: steps.zq_type.outputs.action == 'commit' && steps.run_decision.outputs.should_run == '1'
         run: |
           set -e
@@ -149,10 +141,10 @@ jobs:
           done
 
           COMMIT_MSG=$(rand_str 32)
-          git commit -m "$COMMIT_MSG" || echo "No changes to commit"
+          git commit -m "$COMMIT_MSG" || true
           git push origin main
 
-      - name: 'zap/anomaly-logger'
+      - name: zap/anomaly-logger
         if: steps.zq_type.outputs.action == 'issue' && steps.run_decision.outputs.should_run == '1'
         env:
           GH_TOKEN: ${{ secrets.PAT_GITHUB }}
@@ -166,7 +158,7 @@ jobs:
             --title "$(rand_str 12)" \
             --body "$(rand_str 32)"
 
-      - name: 'zap/delta-proposer'
+      - name: zap/delta-proposer
         if: steps.zq_type.outputs.action == 'pull_request' && steps.run_decision.outputs.should_run == '1'
         env:
           GH_TOKEN: ${{ secrets.PAT_GITHUB }}
@@ -174,7 +166,7 @@ jobs:
           set -e
 
           rand_str() {
-            tr -dc 'A-Za-z0-9' < /dev/urandom 2>/dev/urandom 2>/dev/null | head -c "$1"
+            tr -dc 'A-Za-z0-9' < /dev/urandom 2>/dev/null | head -c "$1"
           }
 
           git fetch origin
