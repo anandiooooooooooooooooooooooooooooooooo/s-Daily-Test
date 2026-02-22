@@ -31,20 +31,45 @@ jobs:
           git config user.name "${{ secrets.GIT_USER_NAME }}"
           git config user.email "${{ secrets.GIT_USER_EMAIL }}"
 
-      - name: 'zap/slot-throttler (3-7 runs/day)'
+      - name: 'zap/slot-throttler (variable intensity, no Sunday)'
         id: run_decision
         run: |
-          # 60% chance to continue (approx. 5 out of 8 runs/day)
-          SHOULD_RUN=$((RANDOM % 10 < 6))
-          echo "should_run=$SHOULD_RUN" >> $GITHUB_OUTPUT
-          if [ "$SHOULD_RUN" -eq 0 ]; then
-            echo "🔕 Skipping this run for throttling."
+          DAY_OF_WEEK=$(date +%u)
+
+          # Skip Sundays (7)
+          if [ "$DAY_OF_WEEK" -eq 7 ]; then
+            echo "🚫 Sunday detected. Skipping all activity."
+            echo "should_run=0" >> $GITHUB_OUTPUT
             exit 0
-          else
-            echo "✅ Proceeding with execution."
           fi
 
+          # 80% chance to run
+          SHOULD_RUN=$((RANDOM % 10 < 8))
+          echo "should_run=$SHOULD_RUN" >> $GITHUB_OUTPUT
+
+          if [ "$SHOULD_RUN" -eq 0 ]; then
+            echo "🔕 Skipping this run."
+            exit 0
+          fi
+
+          # Intensity distribution
+          R=$((RANDOM % 100))
+
+          if [ "$R" -lt 40 ]; then
+            LEVEL="light"
+          elif [ "$R" -lt 70 ]; then
+            LEVEL="mediumlight"
+          elif [ "$R" -lt 90 ]; then
+            LEVEL="mediumdark"
+          else
+            LEVEL="darkest"
+          fi
+
+          echo "intensity=$LEVEL" >> $GITHUB_OUTPUT
+          echo "🔥 Intensity level: $LEVEL"
+
       - name: 'zap/vector-decider'
+        if: steps.run_decision.outputs.should_run == '1'
         id: zq_type
         run: |
           INPUT="${{ github.event.inputs.test_action }}"
@@ -53,7 +78,7 @@ jobs:
               cmt) echo "action=commit" >> $GITHUB_OUTPUT; exit 0 ;;
               is)  echo "action=issue" >> $GITHUB_OUTPUT; exit 0 ;;
               pr)  echo "action=pull_request" >> $GITHUB_OUTPUT; exit 0 ;;
-              *)   echo "Invalid test_action: '$INPUT'. Falling back to scheduled action." ;;
+              *)   echo "Invalid test_action: '$INPUT'. Falling back." ;;
             esac
           fi
 
@@ -65,18 +90,18 @@ jobs:
             4) ACTIONS=(commit commit pull_request) ;;
             5) ACTIONS=(commit commit issue pull_request) ;;
             6) ACTIONS=(commit commit issue) ;;
-            7) ACTIONS=(commit pull_request issue) ;;
             *) ACTIONS=(commit) ;;
           esac
 
           RANDOM_ACTION=${ACTIONS[$((RANDOM % ${#ACTIONS[@]}))]}
-          echo "Selected action for Day $DAY_OF_WEEK: $RANDOM_ACTION"
+          echo "Selected action: $RANDOM_ACTION"
           echo "action=$RANDOM_ACTION" >> $GITHUB_OUTPUT
 
       - name: 'zap/datastream-mutator'
-        if: steps.zq_type.outputs.action == 'commit'
+        if: steps.zq_type.outputs.action == 'commit' && steps.run_decision.outputs.should_run == '1'
         run: |
           set -e
+
           rand_str() {
             tr -dc 'A-Za-z0-9' < /dev/urandom 2>/dev/null | head -c "$1"
           }
@@ -84,119 +109,92 @@ jobs:
           git checkout main
           git pull origin main --rebase
 
+          INTENSITY="${{ steps.run_decision.outputs.intensity }}"
+
+          case "$INTENSITY" in
+            light)
+              TARGET_FOLDERS=2
+              FILES_PER_FOLDER=2
+              ;;
+            mediumlight)
+              TARGET_FOLDERS=4
+              FILES_PER_FOLDER=4
+              ;;
+            mediumdark)
+              TARGET_FOLDERS=7
+              FILES_PER_FOLDER=6
+              ;;
+            darkest)
+              TARGET_FOLDERS=10
+              FILES_PER_FOLDER=10
+              ;;
+            *)
+              TARGET_FOLDERS=3
+              FILES_PER_FOLDER=3
+              ;;
+          esac
+
           BASE_DIR="data_gen"
-          TARGET_FOLDERS=10
-          FILES_PER_FOLDER=10
-
-          find src tests -type f | while read -r file; do
-            echo "// @$(date +%s) [$(rand_str 12)]" >> "$file"
-            git add "$file"
-          done
-
           mkdir -p "$BASE_DIR"
-          EXISTING_FOLDERS=($(find "$BASE_DIR" -mindepth 1 -maxdepth 1 -type d | sort))
-
-          for idx in "${!EXISTING_FOLDERS[@]}"; do
-            if [ "$idx" -ge $TARGET_FOLDERS ]; then
-              rm -rf "${EXISTING_FOLDERS[$idx]}"
-            fi
-          done
 
           for i in $(seq 1 $TARGET_FOLDERS); do
-            NEW_NAME=$(rand_str 3)
-            DEST_PATH="$BASE_DIR/$NEW_NAME"
-
-            if [ "$i" -le "${#EXISTING_FOLDERS[@]}" ]; then
-              OLD_PATH="${EXISTING_FOLDERS[$((i-1))]}"
-              if [ "$OLD_PATH" != "$DEST_PATH" ]; then
-                mv "$OLD_PATH" "$DEST_PATH"
-              fi
-            else
-              mkdir -p "$DEST_PATH"
-            fi
-
-            FOLDER_PATH="$DEST_PATH"
-            EXISTING_FILES=($(find "$FOLDER_PATH" -maxdepth 1 -type f | sort))
-
-            for idxf in "${!EXISTING_FILES[@]}"; do
-              if [ "$idxf" -ge $FILES_PER_FOLDER ]; then
-                rm -f "${EXISTING_FILES[$idxf]}"
-              fi
-            done
+            FOLDER="$BASE_DIR/$(rand_str 3)"
+            mkdir -p "$FOLDER"
 
             for j in $(seq 1 $FILES_PER_FOLDER); do
-              NEW_FILE_NAME="$(rand_str 5)_$(shuf -n1 -e log txt rs dat bin)"
-              NEW_FILE_PATH="$FOLDER_PATH/$NEW_FILE_NAME"
-
-              if [ "$j" -le "${#EXISTING_FILES[@]}"]; then
-                OLD_FILE="${EXISTING_FILES[$((j-1))]}"
-                if [ "$OLD_FILE" != "$NEW_FILE_PATH" ]; then
-                  mv "$OLD_FILE" "$NEW_FILE_PATH"
-                fi
-              fi
-
-              head -c 256 /dev/urandom > "$NEW_FILE_PATH"
-              git add "$NEW_FILE_PATH"
+              FILE="$FOLDER/$(rand_str 5).dat"
+              head -c 256 /dev/urandom > "$FILE"
+              git add "$FILE"
             done
           done
 
           COMMIT_MSG=$(rand_str 32)
-          git commit -m "$COMMIT_MSG"
+          git commit -m "$COMMIT_MSG" || echo "No changes to commit"
           git push origin main
 
       - name: 'zap/anomaly-logger'
-        if: steps.zq_type.outputs.action == 'issue'
+        if: steps.zq_type.outputs.action == 'issue' && steps.run_decision.outputs.should_run == '1'
         env:
           GH_TOKEN: ${{ secrets.PAT_GITHUB }}
         run: |
           rand_str() {
             tr -dc 'A-Za-z0-9' < /dev/urandom 2>/dev/null | head -c "$1"
           }
-          TITLE=$(rand_str 12)
-          BODY=$(rand_str 32)
+
           gh issue create \
             --repo "${{ github.repository }}" \
-            --title "$TITLE" \
-            --body "$BODY"
+            --title "$(rand_str 12)" \
+            --body "$(rand_str 32)"
 
       - name: 'zap/delta-proposer'
-        if: steps.zq_type.outputs.action == 'pull_request'
+        if: steps.zq_type.outputs.action == 'pull_request' && steps.run_decision.outputs.should_run == '1'
         env:
           GH_TOKEN: ${{ secrets.PAT_GITHUB }}
         run: |
           set -e
+
           rand_str() {
-            tr -dc 'A-Za-z0-9' < /dev/urandom 2>/dev/null | head -c "$1"
+            tr -dc 'A-Za-z0-9' < /dev/urandom 2>/dev/urandom 2>/dev/null | head -c "$1"
           }
 
           git fetch origin
           git checkout main
           git pull origin main --rebase
 
-          if git show-ref --verify --quiet refs/remotes/origin/main2; then
-            git checkout main2
-            git pull origin main2 --rebase
-            git rebase main
-          else
-            git checkout -b main2 main
-          fi
+          git checkout -B main2 main
 
-          FILENAME="features/$(rand_str 8).rs"
-          mkdir -p "$(dirname "$FILENAME")"
-          echo "// Feature @$(date +%s) $(rand_str 12)" > "$FILENAME"
+          FILE="features/$(rand_str 8).rs"
+          mkdir -p "$(dirname "$FILE")"
+          echo "// Feature @$(date +%s)" > "$FILE"
 
-          git add "$FILENAME"
-          git commit -m "feat(main2): $(rand_str 24)"
+          git add "$FILE"
+          git commit -m "feat: $(rand_str 24)"
           git push origin main2 --force
 
-          TITLE=$(rand_str 12)
-          BODY=$(rand_str 32)
-          PR_URL=$(gh pr create \
+          gh pr create \
             --repo "${{ github.repository }}" \
             --base main \
             --head main2 \
-            --title "$TITLE" \
-            --body "$BODY" \
-            || true)
-
-          echo "PR created or already exists: $PR_URL"
+            --title "$(rand_str 12)" \
+            --body "$(rand_str 32)" \
+            || true
